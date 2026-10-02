@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Restaurant Order — test website</title>
+  </head>
+  <body>
+    <h1>Restaurant Order</h1>
+    <p>
+      Sample ordering page for exercising the print service. This is a throwaway test harness
+      that stands in for the real restaurant website — no styles, no build step.
+    </p>
+
+    <h2>Menu</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th>Price (NPR)</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="menu"></tbody>
+    </table>
+
+    <h2>Order</h2>
+    <p>
+      <label>Restaurant ID <input id="restaurantId" value="restaurant-1" size="20" /></label>
+      &nbsp;
+      <label>Service token <input id="serviceToken" type="password" size="16" placeholder="only if SERVICE_TOKEN is set" /></label>
+    </p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Item</th>
+          <th>Quantity</th>
+          <th>Subtotal</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="cart"></tbody>
+    </table>
+
+    <p>Total: <strong id="total">0</strong> NPR</p>
+
+    <p>
+      <button id="place" type="button">Place Order</button>
+      <button id="resend" type="button" disabled>Resend last order (same orderId)</button>
+      <button id="invalid" type="button">Send invalid order</button>
+      <button id="agents" type="button">Refresh agents</button>
+    </p>
+
+    <p>
+      Try <code>restaurant-2</code> to see the offline response, and use “Resend last order” to
+      watch duplicate protection skip a second print of the same orderId.
+    </p>
+
+    <h2>Last response</h2>
+    <pre id="response">nothing sent yet</pre>
+
+    <script type="module">
+      const MENU = [
+        { name: 'Chicken Momo', price: 250 },
+        { name: 'Sekuwa', price: 300 },
+        { name: 'Chowmein', price: 280 },
+        { name: 'Thukpa', price: 320 },
+        { name: 'Masala Chiya', price: 60 },
+        { name: 'Chiya', price: 40 },
+        { name: 'Coke', price: 90 },
+        { name: 'Water', price: 40 },
+      ];
+
+      const priceOf = (name) => MENU.find((item) => item.name === name)?.price ?? 0;
+      const cart = new Map(); // name -> quantity
+      let lastOrder = null;
+
+      const el = (id) => document.getElementById(id);
+      const responseBox = el('response');
+
+      function show(status, body) {
+        responseBox.textContent = `HTTP ${status}\n\n${body}`;
+      }
+
+      function renderMenu() {
+        const tbody = el('menu');
+        for (const item of MENU) {
+          const row = document.createElement('tr');
+          row.append(cell(item.name), cell(String(item.price)));
+
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = 'Add';
+          button.addEventListener('click', () => add(item.name, 1));
+          row.append(wrap(button));
+
+          tbody.append(row);
+        }
+      }
+
+      function renderCart() {
+        const tbody = el('cart');
+        tbody.replaceChildren();
+
+        if (cart.size === 0) {
+          const row = document.createElement('tr');
+          const empty = cell('nothing added yet');
+          empty.colSpan = 4;
+          row.append(empty);
+          tbody.append(row);
+        }
+
+        for (const [name, quantity] of cart) {
+          const row = document.createElement('tr');
+          row.append(cell(name), cell(String(quantity)), cell(String(quantity * priceOf(name))));
+
+          const controls = document.createElement('td');
+          controls.append(
+            button('-', () => add(name, -1)),
+            document.createTextNode(' '),
+            button('+', () => add(name, 1)),
+            document.createTextNode(' '),
+            button('Remove', () => {
+              cart.delete(name);
+              renderCart();
+            }),
+          );
+          row.append(controls);
+          tbody.append(row);
+        }
+
+        const total = [...cart].reduce((sum, [name, quantity]) => sum + quantity * priceOf(name), 0);
+        el('total').textContent = String(total);
+        el('place').disabled = cart.size === 0;
+      }
+
+      function add(name, by) {
+        const quantity = (cart.get(name) ?? 0) + by;
+        if (quantity <= 0) cart.delete(name);
+        else cart.set(name, quantity);
+        renderCart();
+      }
+
+      function cell(text) {
+        const td = document.createElement('td');
+        td.textContent = text;
+        return td;
+      }
+
+      function wrap(node) {
+        const td = document.createElement('td');
+        td.append(node);
+        return td;
+      }
+
+      function button(label, onClick) {
+        const element = document.createElement('button');
+        element.type = 'button';
+        element.textContent = label;
+        element.addEventListener('click', onClick);
+        return element;
+      }
+
+      function headers() {
+        const result = { 'content-type': 'application/json' };
+        const token = el('serviceToken').value.trim();
+        if (token) result.authorization = `Bearer ${token}`;
+        return result;
+      }
+
+      async function postOrder(path, payload) {
+        try {
+          const response = await fetch(path, {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify(payload),
+          });
+          show(response.status, await response.text());
+        } catch (error) {
+          show('fetch failed', String(error));
+        }
+      }
+
+      el('place').addEventListener('click', () => {
+        const order = {
+          restaurantId: el('restaurantId').value.trim(),
+          orderId: `WEB-${Date.now()}`,
+          items: [...cart].map(([name, quantity]) => ({ name, quantity })),
+          total: [...cart].reduce((sum, [name, quantity]) => sum + quantity * priceOf(name), 0),
+        };
+        lastOrder = order;
+        el('resend').disabled = false;
+        void postOrder('/orders', order);
+      });
+
+      el('resend').addEventListener('click', () => {
+        if (lastOrder) void postOrder('/orders', lastOrder);
+      });
+
+      el('invalid').addEventListener('click', () => {
+        void postOrder('/orders', {
+          restaurantId: el('restaurantId').value.trim(),
+          orderId: 'INVALID-1',
+          items: [{ name: 'Coke', quantity: 0 }, { name: '', quantity: 1 }],
+          total: -5,
+        });
+      });
+
+      el('agents').addEventListener('click', async () => {
+        try {
+          const response = await fetch('/agents', { headers: headers() });
+          show(response.status, await response.text());
+        } catch (error) {
+          show('fetch failed', String(error));
+        }
+      });
+
+      renderMenu();
+      renderCart();
+    </script>
+  </body>
+</html>
